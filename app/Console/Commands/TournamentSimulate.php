@@ -893,6 +893,10 @@ class TournamentSimulate extends Command
 
     private function finishGame(Game $game, ScoreCalculationService $scoreService): void
     {
+        // Refresh the game to get latest team assignments (from propagation)
+        $game->refresh();
+        $game->load(['homeTeam.nation', 'visitorTeam.nation']);
+
         // For knockout games without teams, try to assign teams from real results
         if ($game->isKnockoutGame() && (!$game->home_team_id || !$game->visitor_team_id)) {
             $this->assignKnockoutTeams($game);
@@ -935,7 +939,155 @@ class TournamentSimulate extends Command
         $game->is_finished = true;
         $game->save();
 
+        // Propagate winner to next round for knockout games
+        if ($game->isKnockoutGame()) {
+            $this->propagateWinnerToNextRound($game);
+        }
+
         $scoreService->calculateGameScores($game);
+    }
+
+    /**
+     * Propagate the winner of a knockout game to the next round
+     */
+    private function propagateWinnerToNextRound(Game $game): void
+    {
+        $winner = $this->getGameWinner($game);
+        $loser = $this->getGameLoser($game);
+
+        if (!$winner) {
+            return;
+        }
+
+        // Find the position of this game among games of the same type
+        $sameTypeGames = Game::where('tournament_id', $game->tournament_id)
+            ->where('game_type', $game->game_type)
+            ->orderBy('kickoff_at')
+            ->pluck('id')
+            ->toArray();
+
+        $position = array_search($game->id, $sameTypeGames);
+
+        if ($position === false) {
+            return;
+        }
+
+        // Determine the next round and position within it
+        $nextRoundType = $this->getNextRoundType($game->game_type);
+
+        if (!$nextRoundType) {
+            return; // Final has no next round
+        }
+
+        // Get games of the next round as an array with sequential indexes
+        $nextRoundGames = Game::where('tournament_id', $game->tournament_id)
+            ->where('game_type', $nextRoundType)
+            ->orderBy('kickoff_at')
+            ->get()
+            ->values()
+            ->all();
+
+        // Calculate which next-round game and which side (home/visitor)
+        // Standard bracket: games 0,1 → game 0; games 2,3 → game 1; etc.
+        // Even positions are home team, odd positions are visitor team
+        $nextGameIndex = (int) floor($position / 2);
+        $isHomeTeam = ($position % 2 === 0);
+
+        if ($nextRoundType === 'THIRD_PLACE') {
+            // Third place game gets the losers from semi-finals
+            $thirdPlaceGame = $nextRoundGames[0] ?? null;
+            if ($thirdPlaceGame && $loser) {
+                if ($isHomeTeam) {
+                    $thirdPlaceGame->home_team_id = $loser->id;
+                } else {
+                    $thirdPlaceGame->visitor_team_id = $loser->id;
+                }
+                $thirdPlaceGame->save();
+            }
+            // Also update final with winner
+            $finalGame = Game::where('tournament_id', $game->tournament_id)
+                ->where('game_type', 'FINAL')
+                ->first();
+            if ($finalGame) {
+                if ($isHomeTeam) {
+                    $finalGame->home_team_id = $winner->id;
+                } else {
+                    $finalGame->visitor_team_id = $winner->id;
+                }
+                $finalGame->save();
+            }
+            return;
+        }
+
+        if (!isset($nextRoundGames[$nextGameIndex])) {
+            return;
+        }
+
+        $nextGame = $nextRoundGames[$nextGameIndex];
+
+        if ($isHomeTeam) {
+            $nextGame->home_team_id = $winner->id;
+        } else {
+            $nextGame->visitor_team_id = $winner->id;
+        }
+
+        $nextGame->save();
+    }
+
+    /**
+     * Get the winner team of a knockout game
+     */
+    private function getGameWinner(Game $game): ?Team
+    {
+        if ($game->has_penalty_shootout) {
+            return Team::find($game->penalty_winner_team_id);
+        }
+
+        if ($game->goals_home > $game->goals_visitor) {
+            return Team::find($game->home_team_id);
+        }
+
+        if ($game->goals_visitor > $game->goals_home) {
+            return Team::find($game->visitor_team_id);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the loser team of a knockout game
+     */
+    private function getGameLoser(Game $game): ?Team
+    {
+        if ($game->has_penalty_shootout) {
+            $winnerId = $game->penalty_winner_team_id;
+            return Team::find($winnerId === $game->home_team_id ? $game->visitor_team_id : $game->home_team_id);
+        }
+
+        if ($game->goals_home > $game->goals_visitor) {
+            return Team::find($game->visitor_team_id);
+        }
+
+        if ($game->goals_visitor > $game->goals_home) {
+            return Team::find($game->home_team_id);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the next round type for knockout progression
+     */
+    private function getNextRoundType(string $currentType): ?string
+    {
+        return match ($currentType) {
+            'ROUND_OF_16' => 'QUARTER_FINAL',
+            'QUARTER_FINAL' => 'SEMI_FINAL',
+            'SEMI_FINAL' => 'THIRD_PLACE', // Special handling for both 3rd place and final
+            'THIRD_PLACE' => null,
+            'FINAL' => null,
+            default => null,
+        };
     }
 
     private function findRealResult(Game $game): ?array
@@ -977,55 +1129,37 @@ class TournamentSimulate extends Command
 
     /**
      * Assign teams to knockout games based on real World Cup 2022 matchups
+     * Only assigns teams for Round of 16; later rounds are filled by dynamic progression
      */
     private function assignKnockoutTeams(Game $game): void
     {
-        // Map knockout game types/positions to real matchups (World Cup 2022)
-        // Use 2-letter codes matching the database (lowercase)
-        $knockoutMatchups = [
-            // Round of 16
-            'ROUND_OF_16' => [
-                ['nl', 'us'], ['ar', 'au'], ['fr', 'pl'], ['gb-eng', 'sn'],
-                ['jp', 'hr'], ['br', 'kr'], ['ma', 'es'], ['pt', 'ch'],
-            ],
-            // Quarter Finals
-            'QUARTER_FINAL' => [
-                ['hr', 'br'], ['nl', 'ar'], ['ma', 'pt'], ['gb-eng', 'fr'],
-            ],
-            // Semi Finals
-            'SEMI_FINAL' => [
-                ['ar', 'hr'], ['fr', 'ma'],
-            ],
-            // Third Place
-            'THIRD_PLACE' => [
-                ['hr', 'ma'],
-            ],
-            // Final
-            'FINAL' => [
-                ['ar', 'fr'],
-            ],
-        ];
-
-        $gameType = $game->game_type;
-
-        if (!isset($knockoutMatchups[$gameType])) {
+        // Only assign teams for Round of 16 - later rounds are dynamically filled
+        // by propagateWinnerToNextRound() after each knockout game finishes
+        if ($game->game_type !== 'ROUND_OF_16') {
             return;
         }
 
-        // Find the position of this game among games of the same type
+        // Round of 16 matchups from World Cup 2022
+        // Use 2-letter codes matching the database (lowercase)
+        $r16Matchups = [
+            ['nl', 'us'], ['ar', 'au'], ['fr', 'pl'], ['gb-eng', 'sn'],
+            ['jp', 'hr'], ['br', 'kr'], ['ma', 'es'], ['pt', 'ch'],
+        ];
+
+        // Find the position of this game among R16 games
         $sameTypeGames = Game::where('tournament_id', $game->tournament_id)
-            ->where('game_type', $gameType)
+            ->where('game_type', 'ROUND_OF_16')
             ->orderBy('kickoff_at')
             ->pluck('id')
             ->toArray();
 
         $position = array_search($game->id, $sameTypeGames);
 
-        if ($position === false || !isset($knockoutMatchups[$gameType][$position])) {
+        if ($position === false || !isset($r16Matchups[$position])) {
             return;
         }
 
-        $matchup = $knockoutMatchups[$gameType][$position];
+        $matchup = $r16Matchups[$position];
         $homeCode = $matchup[0];
         $visitorCode = $matchup[1];
 

@@ -7,13 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class GameTipp extends Model
 {
-    protected $fillable = [
-        'user_id',
-        'game_id',
-        'goals_home',
-        'goals_visitor',
-        'penalty_winner_team_id',
-    ];
+    protected $guarded = ['id'];
 
     protected function casts(): array
     {
