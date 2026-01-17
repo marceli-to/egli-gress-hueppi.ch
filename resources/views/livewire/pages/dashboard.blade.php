@@ -2,18 +2,19 @@
 
 use App\Models\Game;
 use App\Models\GameTipp;
-use App\Models\Tournament;
 use App\Models\UserScore;
+use App\Helpers\TournamentHelper;
 use Livewire\Volt\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
+use Illuminate\Support\Facades\DB;
 
 new #[Layout('layouts.app')] class extends Component
 {
     #[Computed]
     public function tournament()
     {
-        return Tournament::where('is_active', true)->first();
+        return TournamentHelper::active();
     }
 
     #[Computed]
@@ -53,25 +54,16 @@ new #[Layout('layouts.app')] class extends Component
             return null;
         }
 
-        $totalTipps = GameTipp::whereHas('game', fn($q) => $q->where('tournament_id', $this->tournament->id))
-            ->where('user_id', auth()->id())
-            ->count();
-
-        $totalPoints = GameTipp::whereHas('game', fn($q) => $q->where('tournament_id', $this->tournament->id)->where('is_finished', true))
-            ->where('user_id', auth()->id())
-            ->sum('score');
-
-        $perfectTipps = GameTipp::whereHas('game', fn($q) => $q->where('tournament_id', $this->tournament->id)->where('is_finished', true))
-            ->where('user_id', auth()->id())
-            ->where('is_goals_home_correct', true)
-            ->where('is_goals_visitor_correct', true)
-            ->count();
-
-        return (object) [
-            'total_tipps' => $totalTipps,
-            'total_points' => $totalPoints,
-            'perfect_tipps' => $perfectTipps,
-        ];
+        return DB::table('game_tipps')
+            ->join('games', 'game_tipps.game_id', '=', 'games.id')
+            ->where('game_tipps.user_id', auth()->id())
+            ->where('games.tournament_id', $this->tournament->id)
+            ->select(
+                DB::raw('COUNT(*) as total_tipps'),
+                DB::raw('SUM(CASE WHEN games.is_finished = 1 THEN game_tipps.score ELSE 0 END) as total_points'),
+                DB::raw('SUM(CASE WHEN games.is_finished = 1 AND game_tipps.is_goals_home_correct = 1 AND game_tipps.is_goals_visitor_correct = 1 THEN 1 ELSE 0 END) as perfect_tipps')
+            )
+            ->first();
     }
 
     #[Computed]

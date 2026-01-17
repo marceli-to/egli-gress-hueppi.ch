@@ -3,7 +3,7 @@
 use App\Models\Game;
 use App\Models\GameTipp;
 use App\Models\Team;
-use App\Models\Tournament;
+use App\Helpers\TournamentHelper;
 use Livewire\Volt\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
@@ -23,7 +23,7 @@ new #[Layout('layouts.app')] class extends Component
     #[Computed]
     public function tournament()
     {
-        return Tournament::where('is_active', true)->first();
+        return TournamentHelper::active();
     }
 
     #[Computed]

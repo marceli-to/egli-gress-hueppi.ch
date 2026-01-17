@@ -1,9 +1,9 @@
 <?php
 
 use App\Livewire\Actions\Logout;
-use App\Models\Tournament;
 use App\Models\UserScore;
 use App\Models\SpecialTipp;
+use App\Helpers\TournamentHelper;
 use Livewire\Volt\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
@@ -18,7 +18,7 @@ new #[Layout('layouts.guest-home')] class extends Component
     #[Computed]
     public function tournament()
     {
-        return Tournament::where('is_active', true)->first();
+        return TournamentHelper::active();
     }
 
     #[Computed]
