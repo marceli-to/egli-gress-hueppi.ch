@@ -11,12 +11,14 @@ class Tournament extends Model
         'name',
         'slug',
         'is_active',
+        'is_complete',
     ];
 
     protected function casts(): array
     {
         return [
             'is_active' => 'boolean',
+            'is_complete' => 'boolean',
         ];
     }
 

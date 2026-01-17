@@ -7,6 +7,7 @@ use Livewire\Volt\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 
 new #[Layout('layouts.app')] class extends Component
 {
@@ -58,7 +59,7 @@ new #[Layout('layouts.app')] class extends Component
             return null;
         }
 
-        return TippGroup::with(['members.user.userScores' => fn($q) => $q->where('tournament_id', $this->tournament->id)])
+        return TippGroup::with(['members.userScores' => fn($q) => $q->where('tournament_id', $this->tournament->id)])
             ->find($this->selectedGroupId);
     }
 
@@ -104,6 +105,13 @@ new #[Layout('layouts.app')] class extends Component
 
     public function joinPrivateGroup(): void
     {
+        $key = 'group-join:' . auth()->id();
+
+        if (RateLimiter::tooManyAttempts($key, 5)) {
+            $this->addError('joinGroupPassword', 'Zu viele Versuche. Bitte warten.');
+            return;
+        }
+
         $this->validate([
             'joinGroupCode' => 'required',
             'joinGroupPassword' => 'required',
@@ -114,14 +122,18 @@ new #[Layout('layouts.app')] class extends Component
             ->first();
 
         if (!$group) {
+            RateLimiter::hit($key, 60);
             $this->addError('joinGroupCode', 'Group not found.');
             return;
         }
 
         if (!$group->password || !Hash::check($this->joinGroupPassword, $group->password)) {
+            RateLimiter::hit($key, 60);
             $this->addError('joinGroupPassword', 'Incorrect password.');
             return;
         }
+
+        RateLimiter::clear($key);
 
         GroupMember::firstOrCreate([
             'tipp_group_id' => $group->id,
@@ -136,17 +148,22 @@ new #[Layout('layouts.app')] class extends Component
 
     public function leaveGroup(int $groupId): void
     {
-        $group = TippGroup::find($groupId);
-        if (!$group) return;
+        // Verify membership first
+        $membership = GroupMember::where('tipp_group_id', $groupId)
+            ->where('user_id', auth()->id())
+            ->first();
 
-        // Can't leave if owner
-        if ($group->owner_user_id === auth()->id()) {
-            return;
+        if (!$membership) {
+            return; // Not a member
         }
 
-        GroupMember::where('tipp_group_id', $groupId)
-            ->where('user_id', auth()->id())
-            ->delete();
+        // Check if owner
+        $group = TippGroup::find($groupId);
+        if ($group && $group->owner_user_id === auth()->id()) {
+            return; // Owners can't leave
+        }
+
+        $membership->delete();
 
         if ($this->selectedGroupId === $groupId) {
             $this->selectedGroupId = null;
@@ -268,29 +285,29 @@ new #[Layout('layouts.app')] class extends Component
                                     </thead>
                                     <tbody class="bg-white divide-y divide-gray-200">
                                         @php
-                                            $members = $this->selectedGroup->members->sortByDesc(fn($m) => $m->user->userScores->first()?->total_points ?? 0)->values();
+                                            $members = $this->selectedGroup->members->sortByDesc(fn($m) => $m->userScores->first()?->total_points ?? 0)->values();
                                         @endphp
                                         @foreach ($members as $index => $member)
                                             @php
-                                                $score = $member->user->userScores->first();
-                                                $isCurrentUser = $member->user_id === auth()->id();
+                                                $score = $member->userScores->first();
+                                                $isCurrentUser = $member->id === auth()->id();
                                             @endphp
                                             <tr class="{{ $isCurrentUser ? 'bg-indigo-50' : '' }}">
                                                 <td class="px-6 py-4">
                                                     @if ($index === 0)
-                                                        <span class="text-xl">🥇</span>
+                                                        <span class="text-xl">1</span>
                                                     @elseif ($index === 1)
-                                                        <span class="text-xl">🥈</span>
+                                                        <span class="text-xl">2</span>
                                                     @elseif ($index === 2)
-                                                        <span class="text-xl">🥉</span>
+                                                        <span class="text-xl">3</span>
                                                     @else
                                                         <span class="text-gray-600 font-semibold">{{ $index + 1 }}</span>
                                                     @endif
                                                 </td>
                                                 <td class="px-6 py-4">
                                                     <span class="{{ $isCurrentUser ? 'font-semibold text-indigo-600' : '' }}">
-                                                        {{ $member->user->display_name ?? $member->user->name }}
-                                                        @if ($isCurrentUser) <span class="text-xs text-gray-500">(You)</span> @endif
+                                                        {{ $member->display_name ?? $member->name }}
+                                                        @if ($isCurrentUser) <span class="text-xs text-gray-500">(Du)</span> @endif
                                                     </span>
                                                 </td>
                                                 <td class="px-6 py-4 text-right font-bold">

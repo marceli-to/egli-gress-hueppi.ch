@@ -14,6 +14,8 @@ class SpecialTippSpec extends Model
         'type',
         'value',
         'team_id',
+        'result_value',
+        'result_ranking',
     ];
 
     protected function casts(): array

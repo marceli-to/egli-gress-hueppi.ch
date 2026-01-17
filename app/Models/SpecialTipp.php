@@ -12,6 +12,7 @@ class SpecialTipp extends Model
         'special_tipp_spec_id',
         'predicted_team_id',
         'predicted_value',
+        'predicted_ranking',
         'score',
     ];
 

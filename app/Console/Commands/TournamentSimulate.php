@@ -4,9 +4,11 @@ namespace App\Console\Commands;
 
 use App\Models\Game;
 use App\Models\GameTipp;
+use App\Models\GroupMember;
 use App\Models\SpecialTipp;
 use App\Models\SpecialTippSpec;
 use App\Models\Team;
+use App\Models\TippGroup;
 use App\Models\Tournament;
 use App\Models\User;
 use App\Models\UserScore;
@@ -23,7 +25,8 @@ class TournamentSimulate extends Command
                             {--finish-next : Finish the next unfinished game}
                             {--finish-count=1 : Number of games to finish}
                             {--reset : Reset all simulated data}
-                            {--create-users : Only create users with tipps}';
+                            {--create-users : Only create users with tipps}
+                            {--friends-only : Only create special users (Erzberg group), no simulated users}';
 
     protected $description = 'Simulate tournament with fake users and results';
 
@@ -62,6 +65,35 @@ class TournamentSimulate extends Command
         'Groß', 'Seidel', 'Heinrich', 'Brandt', 'Haas', 'Schreiber', 'Graf', 'Schulte', 'Dietrich',
         'Ziegler', 'Kuhn', 'Kühn', 'Pohl', 'Engel', 'Horn', 'Busch', 'Bergmann', 'Thomas',
         'Voigt', 'Sauer', 'Arnold', 'Wolff', 'Pfeiffer',
+    ];
+
+    private array $specialUsers = [
+        'Mäde Thoma',
+        'Patrick Schneider',
+        'Balint Kalotay',
+        'Mats Thommen',
+        'Tschong-Gil Kummert',
+        'Alex Schweizer',
+        'Reto Diener',
+        'Marisa Fiore',
+        'Salome Bachmann',
+        'Mike Raths',
+        'Beni Wülser',
+    ];
+
+    private array $groupNames = [
+        'Die Fussballexperten', 'Stammtisch FC', 'Bier & Tore', 'Die Siegertypen',
+        'Tor! Tor! Tor!', 'Ballzauberer', 'Die Propheten', 'Elfmeterkönige',
+        'Hattrick Heroes', 'Couch-Kommentatoren', 'Die Abseits-Spezialisten',
+        'Fussballverrückt', 'Die Torjäger', 'Flanke & Kopfball', 'Die Traumtore',
+        'Keeper Kings', 'Volley-Vollpfosten', 'Die Nachspielzeit', 'Gelbe Karten Club',
+        'Die Flitzer', 'Rasenliebe', 'Die Eckensteher', 'Freistoss-Freunde',
+        'Die Grätscher', 'Tiki-Taka-Tipper', 'Konter-Könige', 'Die Abwehrriegel',
+        'Angriff ist die beste Verteidigung', 'Pressing-Profis', 'Die Mittelfeldspieler',
+        'Büro-Bundesliga', 'Feierabend-Kicker', 'Die Hobbyfussballer', 'FC Langeweile',
+        'Die Montagsmuffel', 'Dienstags-Tipper', 'Mittwochs-Meister', 'Donnerstag-Domination',
+        'Freitags-Fans', 'Samstags-Stadion', 'Sonntags-Sieger', 'Familie Müller tippt',
+        'Die Nachbarn', 'Kollegenrunde', 'Schulfreunde United', 'Alt aber Gold',
     ];
 
     // Real World Cup 2022 results
@@ -107,6 +139,10 @@ class TournamentSimulate extends Command
             return $this->resetSimulation($tournament);
         }
 
+        if ($this->option('friends-only')) {
+            return $this->createFriendsOnly($tournament);
+        }
+
         if ($this->option('create-users')) {
             return $this->createUsersWithTipps($tournament, (int) $this->option('users'));
         }
@@ -126,14 +162,33 @@ class TournamentSimulate extends Command
         return 0;
     }
 
+    private function createFriendsOnly(Tournament $tournament): int
+    {
+        // Fresh database with seeded data
+        $this->call('migrate:fresh', ['--seed' => true, '--force' => true]);
+
+        // Re-fetch tournament after fresh migration
+        $tournament = Tournament::where('is_active', true)->first();
+        if (!$tournament) {
+            $this->error('No active tournament found after migration.');
+            return 1;
+        }
+
+        $this->createSpecialUsersAndErzbergGroup($tournament);
+        $this->finishAllGames($tournament);
+
+        return 0;
+    }
+
     private function createUsersWithTipps(Tournament $tournament, int $count): int
     {
-        $this->info("Creating {$count} users with German names...");
+        // First, create special users and the Erzberg group
+        $this->createSpecialUsersAndErzbergGroup($tournament);
 
-        // Load games with teams and nations for FIFA rankings
+        $this->info("Creating {$count} simulated users with German names...");
+
+        // Load ALL games (including knockout games without teams yet)
         $games = Game::where('tournament_id', $tournament->id)
-            ->whereNotNull('home_team_id')
-            ->whereNotNull('visitor_team_id')
             ->with(['homeTeam.nation', 'visitorTeam.nation'])
             ->get();
 
@@ -184,12 +239,230 @@ class TournamentSimulate extends Command
 
         $bar->finish();
         $this->newLine();
-        $this->info("Created {$count} users with tipps for all games.");
+        $this->info("Created {$count} simulated users with tipps for all games.");
 
-        // Also create tipps for user ID 1 (admin) if they don't have any
-        $this->createTippsForUser(1, $games, $teams, $specialSpecs);
+        // Create groups and memberships for simulated users
+        $this->createGroupsAndMemberships($tournament);
 
         return 0;
+    }
+
+    private function createSpecialUsersAndErzbergGroup(Tournament $tournament): void
+    {
+        $this->info('Creating special users and Erzberg group...');
+
+        // Load ALL games (including knockout games without teams yet)
+        $games = Game::where('tournament_id', $tournament->id)
+            ->with(['homeTeam.nation', 'visitorTeam.nation'])
+            ->get();
+
+        $teams = Team::where('tournament_id', $tournament->id)
+            ->with('nation')
+            ->get();
+
+        $specialSpecs = SpecialTippSpec::where('tournament_id', $tournament->id)->get();
+
+        // Ensure admin user (Marcel Stadelmann) exists
+        $admin = User::find(1);
+        if (!$admin) {
+            $admin = User::create([
+                'id' => 1,
+                'name' => 'Marcel Stadelmann',
+                'email' => 'marcel@example.com',
+                'password' => Hash::make('password'),
+                'is_admin' => true,
+                'is_simulated' => false,
+            ]);
+            $this->info('Created admin user: Marcel Stadelmann');
+        }
+
+        // Create or get the Erzberg group
+        $erzbergGroup = TippGroup::firstOrCreate(
+            [
+                'tournament_id' => $tournament->id,
+                'name' => 'Erzberg',
+            ],
+            [
+                'owner_user_id' => $admin->id,
+                'password' => null, // Public group
+            ]
+        );
+
+        // Add admin to Erzberg group if not already member
+        GroupMember::firstOrCreate([
+            'tipp_group_id' => $erzbergGroup->id,
+            'user_id' => $admin->id,
+        ]);
+
+        // Create tipps for admin if they don't have any
+        $this->createTippsForUserIfNeeded($admin->id, $games, $teams, $specialSpecs);
+
+        // Create special users
+        $createdCount = 0;
+        foreach ($this->specialUsers as $name) {
+            $email = strtolower(str_replace(' ', '.', $this->removeUmlauts($name))) . '@example.com';
+
+            $user = User::firstOrCreate(
+                ['email' => $email],
+                [
+                    'name' => $name,
+                    'password' => Hash::make('password'),
+                    'is_simulated' => false, // Not simulated, won't be deleted on reset
+                ]
+            );
+
+            if ($user->wasRecentlyCreated) {
+                $createdCount++;
+            }
+
+            // Add to Erzberg group
+            GroupMember::firstOrCreate([
+                'tipp_group_id' => $erzbergGroup->id,
+                'user_id' => $user->id,
+            ]);
+
+            // Create tipps for this user
+            $this->createTippsForUserIfNeeded($user->id, $games, $teams, $specialSpecs);
+        }
+
+        $memberCount = $erzbergGroup->members()->count();
+        $this->info("Erzberg group ready with {$memberCount} members. Created {$createdCount} new special users.");
+    }
+
+    private function createTippsForUserIfNeeded(int $userId, $games, $teams, $specialSpecs): void
+    {
+        $existingTipps = GameTipp::where('user_id', $userId)->count();
+        if ($existingTipps > 0) {
+            return;
+        }
+
+        foreach ($games as $game) {
+            $this->createGameTippForUser($userId, $game);
+        }
+
+        foreach ($specialSpecs as $spec) {
+            $existingSpecialTipp = SpecialTipp::where('user_id', $userId)
+                ->where('special_tipp_spec_id', $spec->id)
+                ->exists();
+
+            if (!$existingSpecialTipp) {
+                $this->createSpecialTippForUser($userId, $spec, $teams);
+            }
+        }
+    }
+
+    private function createGroupsAndMemberships(Tournament $tournament): void
+    {
+        $this->info('Creating tipp groups and memberships...');
+
+        // Get all simulated users
+        $simulatedUsers = User::where('is_simulated', true)->get();
+
+        if ($simulatedUsers->isEmpty()) {
+            $this->warn('No simulated users found.');
+            return;
+        }
+
+        // Shuffle group names and use unique ones
+        $availableGroupNames = $this->groupNames;
+        shuffle($availableGroupNames);
+
+        // Create 10-20 groups (or fewer if not enough users)
+        $groupCount = min(count($availableGroupNames), max(10, (int) ($simulatedUsers->count() * 0.15)));
+        $createdGroups = [];
+
+        // Select random users to be group owners (roughly 15% of users)
+        $potentialOwners = $simulatedUsers->shuffle()->take($groupCount);
+
+        $this->info("Creating {$groupCount} groups...");
+
+        foreach ($potentialOwners as $index => $owner) {
+            $groupName = $availableGroupNames[$index];
+
+            // 70% public groups, 30% private (with password)
+            $isPublic = rand(1, 100) <= 70;
+
+            $group = TippGroup::create([
+                'tournament_id' => $tournament->id,
+                'name' => $groupName,
+                'password' => $isPublic ? null : Hash::make('geheim'),
+                'owner_user_id' => $owner->id,
+            ]);
+
+            // Owner is automatically a member
+            GroupMember::create([
+                'tipp_group_id' => $group->id,
+                'user_id' => $owner->id,
+            ]);
+
+            $createdGroups[] = $group;
+        }
+
+        // Now have other users join groups randomly
+        $this->info('Adding members to groups...');
+
+        $nonOwnerUsers = $simulatedUsers->filter(function ($user) use ($potentialOwners) {
+            return !$potentialOwners->contains('id', $user->id);
+        });
+
+        foreach ($nonOwnerUsers as $user) {
+            // Each user joins 0-3 groups randomly
+            $groupsToJoin = rand(0, 3);
+
+            if ($groupsToJoin === 0) {
+                continue;
+            }
+
+            // Pick random groups to join (prefer public groups)
+            $shuffledGroups = collect($createdGroups)->shuffle();
+
+            $joined = 0;
+            foreach ($shuffledGroups as $group) {
+                if ($joined >= $groupsToJoin) {
+                    break;
+                }
+
+                // Skip if already a member (shouldn't happen, but safety check)
+                $alreadyMember = GroupMember::where('tipp_group_id', $group->id)
+                    ->where('user_id', $user->id)
+                    ->exists();
+
+                if ($alreadyMember) {
+                    continue;
+                }
+
+                // Higher chance to join public groups
+                if (!$group->isPublic() && rand(1, 100) > 40) {
+                    continue;
+                }
+
+                GroupMember::create([
+                    'tipp_group_id' => $group->id,
+                    'user_id' => $user->id,
+                ]);
+
+                $joined++;
+            }
+        }
+
+        // Also add user ID 1 (admin) to a few random groups
+        $adminUser = User::find(1);
+        if ($adminUser) {
+            $adminGroups = collect($createdGroups)->shuffle()->take(3);
+            foreach ($adminGroups as $group) {
+                GroupMember::firstOrCreate([
+                    'tipp_group_id' => $group->id,
+                    'user_id' => $adminUser->id,
+                ]);
+            }
+        }
+
+        // Count stats
+        $publicGroups = collect($createdGroups)->filter->isPublic()->count();
+        $privateGroups = count($createdGroups) - $publicGroups;
+        $totalMemberships = GroupMember::whereIn('tipp_group_id', collect($createdGroups)->pluck('id'))->count();
+
+        $this->info("Created {$groupCount} groups ({$publicGroups} public, {$privateGroups} private) with {$totalMemberships} total memberships.");
     }
 
     private function createGameTippForUser(int $userId, Game $game): void
@@ -222,7 +495,8 @@ class TournamentSimulate extends Command
 
     private function createSpecialTippForUser(int $userId, SpecialTippSpec $spec, $teams): void
     {
-        if ($spec->type === 'TEAM') {
+        if ($spec->type === 'WINNER') {
+            // World Cup winner or Group winner - select a team
             $eligibleTeams = $this->getEligibleTeamsForSpec($spec, $teams);
             if ($eligibleTeams->isNotEmpty()) {
                 // Pick team weighted by FIFA ranking (lower ranking = better = more likely)
@@ -233,45 +507,30 @@ class TournamentSimulate extends Command
                     'predicted_team_id' => $selectedTeam->id,
                 ]);
             }
-        } elseif ($spec->type === 'TOTAL_GOALS') {
+        } elseif ($spec->type === 'FINAL_RANKING') {
+            // Switzerland final ranking - pick a stage (weighted towards realistic outcomes)
+            $rankingOptions = [
+                'GROUP_STAGE' => 15,      // 15% - exit in group stage
+                'ROUND_OF_16' => 40,      // 40% - most common for Switzerland
+                'QUARTER_FINAL' => 30,    // 30% - optimistic but realistic
+                'SEMI_FINAL' => 10,       // 10% - very optimistic
+                'RUNNER_UP' => 4,         // 4% - unlikely
+                'CHAMPION' => 1,          // 1% - dream scenario
+            ];
+            $selectedRanking = $this->weightedRandomKey($rankingOptions);
             SpecialTipp::create([
                 'user_id' => $userId,
                 'special_tipp_spec_id' => $spec->id,
-                'predicted_value' => rand(2, 12),
+                'predicted_ranking' => $selectedRanking,
+            ]);
+        } elseif ($spec->type === 'TOTAL_GOALS') {
+            // Switzerland total goals - pick a number (realistic: 2-8)
+            SpecialTipp::create([
+                'user_id' => $userId,
+                'special_tipp_spec_id' => $spec->id,
+                'predicted_value' => rand(2, 8),
             ]);
         }
-    }
-
-    private function createTippsForUser(int $userId, $games, $teams, $specialSpecs): void
-    {
-        $user = User::find($userId);
-        if (!$user) {
-            return;
-        }
-
-        $existingTipps = GameTipp::where('user_id', $userId)->count();
-        if ($existingTipps > 0) {
-            $this->info("User {$user->name} already has tipps, skipping.");
-            return;
-        }
-
-        $this->info("Creating tipps for {$user->name}...");
-
-        foreach ($games as $game) {
-            $this->createGameTippForUser($userId, $game);
-        }
-
-        foreach ($specialSpecs as $spec) {
-            $existingSpecialTipp = SpecialTipp::where('user_id', $userId)
-                ->where('special_tipp_spec_id', $spec->id)
-                ->exists();
-
-            if (!$existingSpecialTipp) {
-                $this->createSpecialTippForUser($userId, $spec, $teams);
-            }
-        }
-
-        $this->info("Created tipps for {$user->name}.");
     }
 
     /**
@@ -427,12 +686,180 @@ class TournamentSimulate extends Command
         $bar->finish();
         $this->newLine();
 
+        // Set actual results for special tipps
+        $this->setSpecialTippResults($tournament);
+
         // Calculate special tipp scores
         $scoreService->calculateSpecialTippScores($tournament->id);
+
+        // Mark tournament as complete
+        $tournament->update(['is_complete' => true]);
 
         $this->info('All games finished and scores calculated.');
 
         return 0;
+    }
+
+    /**
+     * Set actual results for special tipps based on finished games
+     */
+    private function setSpecialTippResults(Tournament $tournament): void
+    {
+        $this->info('Setting special tipp results...');
+
+        // Get all finished games
+        $games = Game::where('tournament_id', $tournament->id)
+            ->where('is_finished', true)
+            ->with(['homeTeam.nation', 'visitorTeam.nation'])
+            ->get();
+
+        // Set group winners (based on team standings after group stage)
+        $this->setGroupWinnerResults($tournament);
+
+        // Set World Cup winner (from final game)
+        $this->setWorldCupWinnerResult($tournament, $games);
+
+        // Set Switzerland results
+        $this->setSwitzerlandResults($tournament, $games);
+    }
+
+    /**
+     * Set group winner results based on team standings
+     */
+    private function setGroupWinnerResults(Tournament $tournament): void
+    {
+        $teams = Team::where('tournament_id', $tournament->id)
+            ->orderByDesc('points')
+            ->orderByDesc(\DB::raw('CAST(goals_for AS SIGNED) - CAST(goals_against AS SIGNED)'))
+            ->orderByDesc('goals_for')
+            ->get();
+
+        foreach (['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as $group) {
+            $groupWinner = $teams->where('group_name', $group)->first();
+
+            if ($groupWinner) {
+                SpecialTippSpec::where('tournament_id', $tournament->id)
+                    ->where('name', 'WINNER_GROUP_' . $group)
+                    ->update(['team_id' => $groupWinner->id]);
+            }
+        }
+    }
+
+    /**
+     * Set World Cup winner from final game
+     */
+    private function setWorldCupWinnerResult(Tournament $tournament, $games): void
+    {
+        // Reload the final game fresh to get updated team assignments
+        $final = Game::where('tournament_id', $tournament->id)
+            ->where('game_type', 'FINAL')
+            ->where('is_finished', true)
+            ->first();
+
+        if ($final) {
+            $winnerId = null;
+            if ($final->has_penalty_shootout) {
+                $winnerId = $final->penalty_winner_team_id;
+            } elseif ($final->goals_home > $final->goals_visitor) {
+                $winnerId = $final->home_team_id;
+            } elseif ($final->goals_visitor > $final->goals_home) {
+                $winnerId = $final->visitor_team_id;
+            }
+
+            if ($winnerId) {
+                SpecialTippSpec::where('tournament_id', $tournament->id)
+                    ->where('name', 'WINNER_WORLDCUP')
+                    ->update(['team_id' => $winnerId]);
+            }
+        }
+    }
+
+    /**
+     * Set Switzerland's results (total goals and final ranking)
+     */
+    private function setSwitzerlandResults(Tournament $tournament, $games): void
+    {
+        // Find Switzerland team
+        $switzerland = Team::where('tournament_id', $tournament->id)
+            ->whereHas('nation', fn($q) => $q->where('code', 'CH'))
+            ->first();
+
+        if (!$switzerland) {
+            return;
+        }
+
+        // Calculate total goals scored by Switzerland (excluding penalty shootouts)
+        $totalGoals = 0;
+        foreach ($games as $game) {
+            if ($game->home_team_id === $switzerland->id) {
+                $totalGoals += $game->goals_home ?? 0;
+            } elseif ($game->visitor_team_id === $switzerland->id) {
+                $totalGoals += $game->goals_visitor ?? 0;
+            }
+        }
+
+        // Set total goals result
+        SpecialTippSpec::where('tournament_id', $tournament->id)
+            ->where('name', 'TOTAL_GOALS_CH')
+            ->update(['result_value' => $totalGoals]);
+
+        // Determine Switzerland's final ranking (how far they got)
+        $swissRanking = $this->determineSwitzerlandRanking($tournament, $games, $switzerland);
+
+        SpecialTippSpec::where('tournament_id', $tournament->id)
+            ->where('name', 'FINAL_RANKING_CH')
+            ->update(['result_ranking' => $swissRanking]);
+    }
+
+    /**
+     * Determine how far Switzerland got in the tournament
+     */
+    private function determineSwitzerlandRanking(Tournament $tournament, $games, Team $switzerland): string
+    {
+        // Check if Switzerland played in each round (from final backwards)
+        $rounds = ['FINAL', 'SEMI_FINAL', 'QUARTER_FINAL', 'ROUND_OF_16'];
+
+        foreach ($rounds as $round) {
+            $roundGames = $games->where('game_type', $round);
+            foreach ($roundGames as $game) {
+                if ($game->home_team_id === $switzerland->id || $game->visitor_team_id === $switzerland->id) {
+                    // Switzerland played in this round - check if they won
+                    $swissWon = $this->didTeamWin($game, $switzerland->id);
+
+                    if ($round === 'FINAL') {
+                        return $swissWon ? 'CHAMPION' : 'RUNNER_UP';
+                    }
+                    if ($round === 'SEMI_FINAL') {
+                        return $swissWon ? 'SEMI_FINAL' : 'SEMI_FINAL'; // Got to semi, result depends on 3rd place
+                    }
+                    if ($round === 'QUARTER_FINAL') {
+                        return 'QUARTER_FINAL';
+                    }
+                    if ($round === 'ROUND_OF_16') {
+                        return 'ROUND_OF_16';
+                    }
+                }
+            }
+        }
+
+        // Switzerland didn't make it past group stage
+        return 'GROUP_STAGE';
+    }
+
+    /**
+     * Check if a team won a knockout game
+     */
+    private function didTeamWin(Game $game, int $teamId): bool
+    {
+        if ($game->has_penalty_shootout) {
+            return $game->penalty_winner_team_id === $teamId;
+        }
+
+        if ($game->home_team_id === $teamId) {
+            return $game->goals_home > $game->goals_visitor;
+        }
+
+        return $game->goals_visitor > $game->goals_home;
     }
 
     private function finishNextGames(Tournament $tournament, int $count): int
@@ -466,6 +893,11 @@ class TournamentSimulate extends Command
 
     private function finishGame(Game $game, ScoreCalculationService $scoreService): void
     {
+        // For knockout games without teams, try to assign teams from real results
+        if ($game->isKnockoutGame() && (!$game->home_team_id || !$game->visitor_team_id)) {
+            $this->assignKnockoutTeams($game);
+        }
+
         // Try to find real result first
         $result = $this->findRealResult($game);
 
@@ -515,20 +947,20 @@ class TournamentSimulate extends Command
             return null;
         }
 
-        // Map some codes
+        // Map database codes (lowercase) to real result codes (uppercase)
         $codeMap = [
-            'GB-ENG' => 'ENG',
-            'GB-WLS' => 'WAL',
-            'SA' => 'KSA',
-            'IR' => 'IRN',
-            'KR' => 'KOR',
-            'CR' => 'CRC',
-            'RS' => 'SRB',
-            'CH' => 'SUI',
+            'gb-eng' => 'ENG',
+            'gb-wls' => 'WAL',
+            'sa' => 'KSA',
+            'ir' => 'IRN',
+            'kr' => 'KOR',
+            'cr' => 'CRC',
+            'rs' => 'SRB',
+            'ch' => 'SUI',
         ];
 
-        $homeCode = strtoupper($codeMap[$homeCode] ?? $homeCode);
-        $visitorCode = strtoupper($codeMap[$visitorCode] ?? $visitorCode);
+        $homeCode = strtoupper($codeMap[strtolower($homeCode)] ?? $homeCode);
+        $visitorCode = strtoupper($codeMap[strtolower($visitorCode)] ?? $visitorCode);
 
         foreach ($this->realResults as $result) {
             if ($result[0] === $homeCode && $result[1] === $visitorCode) {
@@ -543,6 +975,98 @@ class TournamentSimulate extends Command
         return null;
     }
 
+    /**
+     * Assign teams to knockout games based on real World Cup 2022 matchups
+     */
+    private function assignKnockoutTeams(Game $game): void
+    {
+        // Map knockout game types/positions to real matchups (World Cup 2022)
+        // Use 2-letter codes matching the database (lowercase)
+        $knockoutMatchups = [
+            // Round of 16
+            'ROUND_OF_16' => [
+                ['nl', 'us'], ['ar', 'au'], ['fr', 'pl'], ['gb-eng', 'sn'],
+                ['jp', 'hr'], ['br', 'kr'], ['ma', 'es'], ['pt', 'ch'],
+            ],
+            // Quarter Finals
+            'QUARTER_FINAL' => [
+                ['hr', 'br'], ['nl', 'ar'], ['ma', 'pt'], ['gb-eng', 'fr'],
+            ],
+            // Semi Finals
+            'SEMI_FINAL' => [
+                ['ar', 'hr'], ['fr', 'ma'],
+            ],
+            // Third Place
+            'THIRD_PLACE' => [
+                ['hr', 'ma'],
+            ],
+            // Final
+            'FINAL' => [
+                ['ar', 'fr'],
+            ],
+        ];
+
+        $gameType = $game->game_type;
+
+        if (!isset($knockoutMatchups[$gameType])) {
+            return;
+        }
+
+        // Find the position of this game among games of the same type
+        $sameTypeGames = Game::where('tournament_id', $game->tournament_id)
+            ->where('game_type', $gameType)
+            ->orderBy('kickoff_at')
+            ->pluck('id')
+            ->toArray();
+
+        $position = array_search($game->id, $sameTypeGames);
+
+        if ($position === false || !isset($knockoutMatchups[$gameType][$position])) {
+            return;
+        }
+
+        $matchup = $knockoutMatchups[$gameType][$position];
+        $homeCode = $matchup[0];
+        $visitorCode = $matchup[1];
+
+        $homeTeam = Team::whereHas('nation', fn($q) => $q->where('code', $homeCode))
+            ->where('tournament_id', $game->tournament_id)
+            ->first();
+
+        $visitorTeam = Team::whereHas('nation', fn($q) => $q->where('code', $visitorCode))
+            ->where('tournament_id', $game->tournament_id)
+            ->first();
+
+        if ($homeTeam && $visitorTeam) {
+            $game->home_team_id = $homeTeam->id;
+            $game->visitor_team_id = $visitorTeam->id;
+            $game->save();
+
+            // Refresh relationships so they're available for findRealResult
+            $game->load(['homeTeam.nation', 'visitorTeam.nation']);
+        }
+    }
+
+    /**
+     * Normalize country codes from real results to match our database codes (lowercase)
+     */
+    private function normalizeCountryCode(string $code): string
+    {
+        $codeMap = [
+            'ENG' => 'gb-eng',
+            'WAL' => 'gb-wls',
+            'KSA' => 'sa',
+            'IRN' => 'ir',
+            'KOR' => 'kr',
+            'CRC' => 'cr',
+            'SRB' => 'rs',
+            'SUI' => 'ch',
+        ];
+
+        // Return mapped code or lowercase version of original
+        return $codeMap[$code] ?? strtolower($code);
+    }
+
     private function resetSimulation(Tournament $tournament): int
     {
         $this->warn('This will delete all simulated users and their data.');
@@ -552,6 +1076,13 @@ class TournamentSimulate extends Command
         }
 
         $this->info('Resetting simulation...');
+
+        // Delete groups owned by simulated users (and their memberships via cascade)
+        $simulatedUserIds = User::where('is_simulated', true)->pluck('id');
+        $deletedGroups = TippGroup::whereIn('owner_user_id', $simulatedUserIds)->delete();
+
+        // Also remove memberships of simulated users from any remaining groups
+        GroupMember::whereIn('user_id', $simulatedUserIds)->delete();
 
         // Delete simulated users (cascades to tipps)
         $deletedUsers = User::where('is_simulated', true)->delete();
@@ -585,7 +1116,7 @@ class TournamentSimulate extends Command
         SpecialTipp::whereHas('specialTippSpec', fn($q) => $q->where('tournament_id', $tournament->id))
             ->update(['score' => 0]);
 
-        $this->info("Reset complete. Deleted {$deletedUsers} simulated users.");
+        $this->info("Reset complete. Deleted {$deletedUsers} simulated users and {$deletedGroups} groups.");
 
         return 0;
     }
@@ -615,6 +1146,22 @@ class TournamentSimulate extends Command
             $cumulative += $weight;
             if ($rand <= $cumulative) {
                 return $value;
+            }
+        }
+
+        return array_key_first($weights);
+    }
+
+    private function weightedRandomKey(array $weights): string
+    {
+        $total = array_sum($weights);
+        $rand = rand(1, $total);
+
+        $cumulative = 0;
+        foreach ($weights as $key => $weight) {
+            $cumulative += $weight;
+            if ($rand <= $cumulative) {
+                return $key;
             }
         }
 

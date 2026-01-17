@@ -13,11 +13,6 @@ class GameTipp extends Model
         'goals_home',
         'goals_visitor',
         'penalty_winner_team_id',
-        'score',
-        'is_tendency_correct',
-        'is_difference_correct',
-        'is_goals_home_correct',
-        'is_goals_visitor_correct',
     ];
 
     protected function casts(): array

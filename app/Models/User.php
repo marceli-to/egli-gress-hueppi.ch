@@ -13,11 +13,8 @@ class User extends Authenticatable
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable;
 
-    protected $fillable = [
-        'name',
-        'display_name',
-        'email',
-        'password',
+    protected $guarded = [
+        'id',
         'is_admin',
         'is_simulated',
     ];

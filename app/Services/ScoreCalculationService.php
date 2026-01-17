@@ -24,26 +24,41 @@ class ScoreCalculationService
             return;
         }
 
-        $tipps = GameTipp::where('game_id', $game->id)->get();
+        DB::transaction(function () use ($game) {
+            $tipps = GameTipp::where('game_id', $game->id)->get();
 
-        foreach ($tipps as $tipp) {
-            $this->calculateTippScore($tipp, $game);
-        }
+            foreach ($tipps as $tipp) {
+                $this->calculateTippScore($tipp, $game);
+            }
 
-        // Update team stats for group games
-        if ($game->isGroupGame()) {
-            $this->updateTeamStats($game);
-        }
+            // Update team stats for group games
+            if ($game->isGroupGame()) {
+                $this->updateTeamStats($game);
+            }
 
-        // Recalculate user scores for this tournament
-        $this->recalculateUserScores($game->tournament_id);
+            // Recalculate user scores for this tournament
+            $this->recalculateUserScores($game->tournament_id);
 
-        // Track history
-        $this->trackScoreHistory($game);
+            // Track history
+            $this->trackScoreHistory($game);
+        });
     }
 
     /**
-     * Calculate score for a single tipp
+     * Calculate score for a single tipp using cumulative scoring
+     *
+     * Group Phase (max 10 points):
+     * - 5 points: Correct tendency (win/draw/loss)
+     * - 3 points: Correct goal difference
+     * - 1 point: Correct home team goals
+     * - 1 point: Correct visitor team goals
+     *
+     * K.O. Phase (max 20 points):
+     * - 10 points: Correct winner (team that advances, including penalty shootout)
+     * - 3 points: Correct tendency after 90/120 min
+     * - 3 points: Correct goal difference
+     * - 2 points: Correct home team goals
+     * - 2 points: Correct visitor team goals
      */
     public function calculateTippScore(GameTipp $tipp, Game $game): void
     {
@@ -55,26 +70,66 @@ class ScoreCalculationService
         // Check individual conditions
         $isGoalsHomeCorrect = $tippedHome === $actualHome;
         $isGoalsVisitorCorrect = $tippedVisitor === $actualVisitor;
-        $isExactMatch = $isGoalsHomeCorrect && $isGoalsVisitorCorrect;
 
-        // Goal difference check (only for non-draws)
+        // Goal difference check
         $actualDiff = $actualHome - $actualVisitor;
         $tippedDiff = $tippedHome - $tippedVisitor;
         $isDifferenceCorrect = $actualDiff === $tippedDiff;
 
-        // Tendency check
+        // Tendency check (after 90/120 min, before penalties)
         $actualTendency = $actualHome <=> $actualVisitor; // -1, 0, or 1
         $tippedTendency = $tippedHome <=> $tippedVisitor;
         $isTendencyCorrect = $actualTendency === $tippedTendency;
 
-        // Calculate score
+        // Calculate cumulative score
         $score = 0;
-        if ($isExactMatch) {
-            $score = 4;
-        } elseif ($isDifferenceCorrect && $isTendencyCorrect) {
-            $score = 3;
-        } elseif ($isTendencyCorrect) {
-            $score = 1;
+
+        if ($game->isKnockoutGame()) {
+            // K.O. Phase scoring (max 20 points)
+
+            // Check if winner prediction is correct (10 points)
+            // For knockout games, we need to check who advances
+            $actualWinnerId = $this->getKnockoutWinner($game);
+            $predictedWinnerId = $this->getPredictedKnockoutWinner($tipp, $game);
+            $isWinnerCorrect = $actualWinnerId && $predictedWinnerId && $actualWinnerId === $predictedWinnerId;
+
+            if ($isWinnerCorrect) {
+                $score += 10;
+            }
+
+            if ($isTendencyCorrect) {
+                $score += 3; // Correct tendency after 90/120 min
+            }
+
+            if ($isDifferenceCorrect) {
+                $score += 3; // Correct goal difference
+            }
+
+            if ($isGoalsHomeCorrect) {
+                $score += 2; // Correct home goals
+            }
+
+            if ($isGoalsVisitorCorrect) {
+                $score += 2; // Correct visitor goals
+            }
+        } else {
+            // Group Phase scoring (max 10 points)
+
+            if ($isTendencyCorrect) {
+                $score += 5; // Correct tendency
+            }
+
+            if ($isDifferenceCorrect) {
+                $score += 3; // Correct goal difference
+            }
+
+            if ($isGoalsHomeCorrect) {
+                $score += 1; // Correct home goals
+            }
+
+            if ($isGoalsVisitorCorrect) {
+                $score += 1; // Correct visitor goals
+            }
         }
 
         $tipp->update([
@@ -84,6 +139,36 @@ class ScoreCalculationService
             'is_goals_home_correct' => $isGoalsHomeCorrect,
             'is_goals_visitor_correct' => $isGoalsVisitorCorrect,
         ]);
+    }
+
+    /**
+     * Get the actual winner of a knockout game (the team that advances)
+     */
+    private function getKnockoutWinner(Game $game): ?int
+    {
+        if ($game->goals_home > $game->goals_visitor) {
+            return $game->home_team_id;
+        } elseif ($game->goals_visitor > $game->goals_home) {
+            return $game->visitor_team_id;
+        } elseif ($game->has_penalty_shootout && $game->penalty_winner_team_id) {
+            return $game->penalty_winner_team_id;
+        }
+        return null;
+    }
+
+    /**
+     * Get the predicted winner of a knockout game from a tipp
+     */
+    private function getPredictedKnockoutWinner(GameTipp $tipp, Game $game): ?int
+    {
+        if ($tipp->goals_home > $tipp->goals_visitor) {
+            return $game->home_team_id;
+        } elseif ($tipp->goals_visitor > $tipp->goals_home) {
+            return $game->visitor_team_id;
+        } elseif ($tipp->penalty_winner_team_id) {
+            return $tipp->penalty_winner_team_id;
+        }
+        return null;
     }
 
     /**
@@ -270,21 +355,44 @@ class ScoreCalculationService
      */
     public function calculateSpecialTippScores(int $tournamentId): void
     {
-        $specs = SpecialTippSpec::where('tournament_id', $tournamentId)
-            ->whereNotNull('team_id')
-            ->get();
+        DB::transaction(function () use ($tournamentId) {
+            $specs = SpecialTippSpec::where('tournament_id', $tournamentId)->get();
 
-        foreach ($specs as $spec) {
-            $tipps = SpecialTipp::where('special_tipp_spec_id', $spec->id)->get();
+            foreach ($specs as $spec) {
+                $tipps = SpecialTipp::where('special_tipp_spec_id', $spec->id)->get();
 
-            foreach ($tipps as $tipp) {
-                $isCorrect = $tipp->predicted_team_id === $spec->team_id;
-                $tipp->update([
-                    'score' => $isCorrect ? $spec->value : 0,
-                ]);
+                foreach ($tipps as $tipp) {
+                    $score = $this->calculateSpecialTippScore($tipp, $spec);
+                    $tipp->update(['score' => $score]);
+                }
+            }
+
+            $this->recalculateUserScores($tournamentId);
+        });
+    }
+
+    /**
+     * Calculate score for a single special tipp
+     */
+    private function calculateSpecialTippScore(SpecialTipp $tipp, SpecialTippSpec $spec): int
+    {
+        if ($spec->type === 'WINNER') {
+            // Winner type: compare predicted team with actual winner
+            if ($spec->team_id && $tipp->predicted_team_id === $spec->team_id) {
+                return $spec->value;
+            }
+        } elseif ($spec->type === 'TOTAL_GOALS') {
+            // Total goals: compare predicted value with actual value
+            if ($spec->result_value !== null && $tipp->predicted_value == $spec->result_value) {
+                return $spec->value;
+            }
+        } elseif ($spec->type === 'FINAL_RANKING') {
+            // Final ranking: compare predicted ranking with actual ranking
+            if ($spec->result_ranking && $tipp->predicted_ranking === $spec->result_ranking) {
+                return $spec->value;
             }
         }
 
-        $this->recalculateUserScores($tournamentId);
+        return 0;
     }
 }

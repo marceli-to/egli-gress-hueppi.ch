@@ -38,7 +38,7 @@ new #[Layout('layouts.app')] class extends Component
             return collect();
         }
 
-        return Game::with(['homeTeam.nation', 'visitorTeam.nation', 'tipps' => fn($q) => $q->where('user_id', auth()->id())])
+        return Game::with(['homeTeam.nation', 'visitorTeam.nation', 'penaltyWinnerTeam.nation', 'tipps' => fn($q) => $q->where('user_id', auth()->id())->with('penaltyWinnerTeam.nation')])
             ->where('tournament_id', $this->tournament->id)
             ->where('is_finished', true)
             ->orderByDesc('kickoff_at')
@@ -63,7 +63,8 @@ new #[Layout('layouts.app')] class extends Component
 
         $perfectTipps = GameTipp::whereHas('game', fn($q) => $q->where('tournament_id', $this->tournament->id)->where('is_finished', true))
             ->where('user_id', auth()->id())
-            ->where('score', 4)
+            ->where('is_goals_home_correct', true)
+            ->where('is_goals_visitor_correct', true)
             ->count();
 
         return (object) [
@@ -106,33 +107,33 @@ new #[Layout('layouts.app')] class extends Component
             <!-- Welcome & Stats -->
             <div class="mb-8">
                 <h1 class="text-2xl font-bold text-gray-900 mb-2">
-                    Welcome back, {{ auth()->user()->display_name ?? auth()->user()->name }}!
+                    Willkommen zurück, {{ auth()->user()->display_name ?? auth()->user()->name }}!
                 </h1>
-                <p class="text-gray-600">{{ $this->tournament->name }} - Make your predictions and climb the ranking!</p>
+                <p class="text-gray-600">{{ $this->tournament->name }} - Gib deine Tipps ab und klettere in der Rangliste!</p>
             </div>
 
             <!-- Quick Stats -->
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                 <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                    <p class="text-sm text-gray-500">Total Points</p>
+                    <p class="text-sm text-gray-500">Punkte</p>
                     <p class="text-3xl font-bold text-gray-900">{{ $this->userStats?->total_points ?? 0 }}</p>
                 </div>
                 <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                    <p class="text-sm text-gray-500">Predictions Made</p>
+                    <p class="text-sm text-gray-500">Tipps abgegeben</p>
                     <p class="text-3xl font-bold text-gray-900">{{ $this->userStats?->total_tipps ?? 0 }}</p>
                 </div>
                 <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6">
-                    <p class="text-sm text-gray-500">Perfect Tipps</p>
+                    <p class="text-sm text-gray-500">Exakte Tipps</p>
                     <p class="text-3xl font-bold text-green-600">{{ $this->userStats?->perfect_tipps ?? 0 }}</p>
                 </div>
                 @if ($this->missingTippsCount > 0)
                     <a href="{{ route('games') }}" wire:navigate class="bg-red-50 overflow-hidden shadow-sm sm:rounded-lg p-6 hover:bg-red-100 transition-colors">
-                        <p class="text-sm text-red-600">Missing Tipps</p>
+                        <p class="text-sm text-red-600">Fehlende Tipps</p>
                         <p class="text-3xl font-bold text-red-600">{{ $this->missingTippsCount }}</p>
                     </a>
                 @else
                     <div class="bg-green-50 overflow-hidden shadow-sm sm:rounded-lg p-6">
-                        <p class="text-sm text-green-600">Missing Tipps</p>
+                        <p class="text-sm text-green-600">Fehlende Tipps</p>
                         <p class="text-3xl font-bold text-green-600">0</p>
                     </div>
                 @endif
@@ -142,8 +143,8 @@ new #[Layout('layouts.app')] class extends Component
                 <!-- Upcoming Games -->
                 <div>
                     <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-lg font-semibold text-gray-800">Upcoming Games</h2>
-                        <a href="{{ route('games') }}" wire:navigate class="text-sm text-indigo-600 hover:text-indigo-800">View all →</a>
+                        <h2 class="text-lg font-semibold text-gray-800">Nächste Spiele</h2>
+                        <a href="{{ route('games') }}" wire:navigate class="text-sm text-indigo-600 hover:text-indigo-800">Alle anzeigen →</a>
                     </div>
                     <div class="space-y-3">
                         @forelse ($this->upcomingGames as $game)
@@ -154,7 +155,7 @@ new #[Layout('layouts.app')] class extends Component
                                     @if ($userTipp)
                                         <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">Tipp: {{ $userTipp->goals_home }}:{{ $userTipp->goals_visitor }}</span>
                                     @elseif ($game->canTipp())
-                                        <span class="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded">No tipp yet</span>
+                                        <span class="text-xs px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded">Kein Tipp</span>
                                     @endif
                                 </div>
                                 <div class="flex items-center justify-between">
@@ -175,7 +176,7 @@ new #[Layout('layouts.app')] class extends Component
                             </div>
                         @empty
                             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 text-center text-gray-500">
-                                No upcoming games.
+                                Keine anstehenden Spiele.
                             </div>
                         @endforelse
                     </div>
@@ -184,8 +185,8 @@ new #[Layout('layouts.app')] class extends Component
                 <!-- Recent Results -->
                 <div>
                     <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-lg font-semibold text-gray-800">Recent Results</h2>
-                        <a href="{{ route('games', ['filter' => 'finished']) }}" wire:navigate class="text-sm text-indigo-600 hover:text-indigo-800">View all →</a>
+                        <h2 class="text-lg font-semibold text-gray-800">Letzte Ergebnisse</h2>
+                        <a href="{{ route('games', ['filter' => 'finished']) }}" wire:navigate class="text-sm text-indigo-600 hover:text-indigo-800">Alle anzeigen →</a>
                     </div>
                     <div class="space-y-3">
                         @forelse ($this->recentResults as $game)
@@ -194,11 +195,9 @@ new #[Layout('layouts.app')] class extends Component
                                 <div class="flex items-center justify-between mb-2">
                                     <span class="text-xs text-gray-500">{{ $game->kickoff_at->format('D, d M') }}</span>
                                     @if ($userTipp)
-                                        <span class="text-xs px-2 py-0.5 {{ $userTipp->score > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600' }} rounded">
-                                            +{{ $userTipp->score }} pts ({{ $userTipp->goals_home }}:{{ $userTipp->goals_visitor }})
-                                        </span>
+                                        <x-score-badge :tipp="$userTipp" :game="$game" :showTipp="true" />
                                     @else
-                                        <span class="text-xs text-gray-400">No tipp</span>
+                                        <span class="text-xs text-gray-400">Kein Tipp</span>
                                     @endif
                                 </div>
                                 <div class="flex items-center justify-between">
@@ -208,7 +207,12 @@ new #[Layout('layouts.app')] class extends Component
                                         @endif
                                         <span class="font-medium text-sm">{{ $game->homeTeam?->nation->name }}</span>
                                     </div>
-                                    <span class="font-bold">{{ $game->goals_home }} : {{ $game->goals_visitor }}</span>
+                                    <div class="flex flex-col items-center">
+                                        <span class="font-bold">{{ $game->goals_home }} : {{ $game->goals_visitor }}</span>
+                                        @if ($game->has_penalty_shootout && $game->penaltyWinnerTeam)
+                                            <span class="text-xs text-gray-500">n.V., i.E. {{ $game->penaltyWinnerTeam->nation->name }}</span>
+                                        @endif
+                                    </div>
                                     <div class="flex items-center gap-2">
                                         <span class="font-medium text-sm">{{ $game->visitorTeam?->nation->name }}</span>
                                         @if ($game->visitorTeam)
@@ -219,7 +223,7 @@ new #[Layout('layouts.app')] class extends Component
                             </div>
                         @empty
                             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 text-center text-gray-500">
-                                No finished games yet.
+                                Noch keine beendeten Spiele.
                             </div>
                         @endforelse
                     </div>
@@ -227,7 +231,7 @@ new #[Layout('layouts.app')] class extends Component
             </div>
         @else
             <div class="bg-white overflow-hidden shadow-sm sm:rounded-lg p-6 text-center text-gray-500">
-                No active tournament found.
+                Kein aktives Turnier gefunden.
             </div>
         @endif
     </div>

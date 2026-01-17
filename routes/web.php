@@ -3,7 +3,8 @@
 use Illuminate\Support\Facades\Route;
 use Livewire\Volt\Volt;
 
-Route::view('/', 'welcome');
+// Home page (accessible to all)
+Volt::route('/', 'pages.home')->name('home');
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Volt::route('dashboard', 'pages.dashboard')->name('dashboard');
@@ -12,10 +13,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Volt::route('special-tipps', 'pages.special-tipps')->name('special-tipps');
     Volt::route('groups', 'pages.groups.index')->name('groups');
     Volt::route('stats', 'pages.stats')->name('stats');
-});
-
-Route::middleware(['auth'])->group(function () {
-    Route::view('profile', 'profile')->name('profile');
+    Volt::route('profile', 'pages.profile')->name('profile');
 });
 
 Route::middleware(['auth', 'admin'])->prefix('admin')->group(function () {

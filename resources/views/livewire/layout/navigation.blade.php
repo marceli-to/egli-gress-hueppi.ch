@@ -18,25 +18,32 @@ new class extends Component
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
             <div class="flex">
+                <!-- Logo / Home Link -->
+                <div class="shrink-0 flex items-center">
+                    <a href="{{ route('home') }}" wire:navigate class="text-lg font-bold text-gray-800">
+                        egli-gress.ch
+                    </a>
+                </div>
+
                 <!-- Navigation Links -->
-                <div class="hidden space-x-8 sm:-my-px sm:flex">
+                <div class="hidden space-x-8 sm:-my-px sm:ms-10 sm:flex">
                     <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')" wire:navigate>
                         {{ __('Dashboard') }}
                     </x-nav-link>
                     <x-nav-link :href="route('games')" :active="request()->routeIs('games*')" wire:navigate>
-                        {{ __('Games') }}
+                        {{ __('Spiele') }}
                     </x-nav-link>
                     <x-nav-link :href="route('special-tipps')" :active="request()->routeIs('special-tipps')" wire:navigate>
-                        {{ __('Special Tipps') }}
+                        {{ __('Bonustipps') }}
                     </x-nav-link>
                     <x-nav-link :href="route('ranking')" :active="request()->routeIs('ranking')" wire:navigate>
-                        {{ __('Ranking') }}
+                        {{ __('Rangliste') }}
                     </x-nav-link>
                     <x-nav-link :href="route('groups')" :active="request()->routeIs('groups')" wire:navigate>
-                        {{ __('Groups') }}
+                        {{ __('Gruppen') }}
                     </x-nav-link>
                     <x-nav-link :href="route('stats')" :active="request()->routeIs('stats')" wire:navigate>
-                        {{ __('Stats') }}
+                        {{ __('Statistiken') }}
                     </x-nav-link>
                     @if (auth()->user()->is_admin)
                         <x-nav-link :href="route('admin.games')" :active="request()->routeIs('admin.*')" wire:navigate class="!text-red-600">
@@ -63,13 +70,13 @@ new class extends Component
 
                     <x-slot name="content">
                         <x-dropdown-link :href="route('profile')" wire:navigate>
-                            {{ __('Profile') }}
+                            {{ __('Profil') }}
                         </x-dropdown-link>
 
                         <!-- Authentication -->
                         <button wire:click="logout" class="w-full text-start">
                             <x-dropdown-link>
-                                {{ __('Log Out') }}
+                                {{ __('Abmelden') }}
                             </x-dropdown-link>
                         </button>
                     </x-slot>
@@ -95,19 +102,19 @@ new class extends Component
                 {{ __('Dashboard') }}
             </x-responsive-nav-link>
             <x-responsive-nav-link :href="route('games')" :active="request()->routeIs('games*')" wire:navigate>
-                {{ __('Games') }}
+                {{ __('Spiele') }}
             </x-responsive-nav-link>
             <x-responsive-nav-link :href="route('special-tipps')" :active="request()->routeIs('special-tipps')" wire:navigate>
-                {{ __('Special Tipps') }}
+                {{ __('Bonustipps') }}
             </x-responsive-nav-link>
             <x-responsive-nav-link :href="route('ranking')" :active="request()->routeIs('ranking')" wire:navigate>
-                {{ __('Ranking') }}
+                {{ __('Rangliste') }}
             </x-responsive-nav-link>
             <x-responsive-nav-link :href="route('groups')" :active="request()->routeIs('groups')" wire:navigate>
-                {{ __('Groups') }}
+                {{ __('Gruppen') }}
             </x-responsive-nav-link>
             <x-responsive-nav-link :href="route('stats')" :active="request()->routeIs('stats')" wire:navigate>
-                {{ __('Stats') }}
+                {{ __('Statistiken') }}
             </x-responsive-nav-link>
             @if (auth()->user()->is_admin)
                 <x-responsive-nav-link :href="route('admin.games')" :active="request()->routeIs('admin.*')" wire:navigate class="!text-red-600">
@@ -125,13 +132,13 @@ new class extends Component
 
             <div class="mt-3 space-y-1">
                 <x-responsive-nav-link :href="route('profile')" wire:navigate>
-                    {{ __('Profile') }}
+                    {{ __('Profil') }}
                 </x-responsive-nav-link>
 
                 <!-- Authentication -->
                 <button wire:click="logout" class="w-full text-start">
                     <x-responsive-nav-link>
-                        {{ __('Log Out') }}
+                        {{ __('Abmelden') }}
                     </x-responsive-nav-link>
                 </button>
             </div>
